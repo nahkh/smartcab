@@ -3,7 +3,7 @@ from environment import Agent, Environment
 from planner import RoutePlanner
 from simulator import Simulator
 from sets import Set
-
+import csv
 
 class State:
     """A representation of the current state of the agent"""
@@ -53,6 +53,10 @@ class State:
         id += 32 * self.valid_traffic_states.index(self.traffic_oncoming)
         id += 128 * self.valid_directions.index(self.desired_direction)
         return id
+
+    # Return a human-readable representation of the current state
+    def __str__(self):
+        return "id %i: %s light, %s oncoming, %s left, %s right, trying to go %s" % (self.get_state_id(), self.light, self.traffic_oncoming, self.traffic_left, self.traffic_right, self.desired_direction)
         
 def run_state_test():
     state = State()
@@ -76,7 +80,7 @@ def run_state_test():
 class LearningAgent(Agent):
     """An agent that learns to drive in the smartcab world."""
     
-    def __init__(self, env, learning_rate, discount_rate):
+    def __init__(self, env, learning_rate, discount_rate, initial_q_hat):
         super(LearningAgent, self).__init__(env)  # sets self.env = env, state = None, next_waypoint = None, and a default color
         self.color = 'red'  # override color
         self.planner = RoutePlanner(self.env, self)  # simple route planner to get next_waypoint
@@ -85,12 +89,15 @@ class LearningAgent(Agent):
         self.discount_rate = discount_rate
         self.state = State()
         self.q_hat = {}
+        for i in range(384):
+            self.q_hat[i] = {'forward':initial_q_hat, 'left':initial_q_hat, 'right':initial_q_hat, None:initial_q_hat}
         self.cumulative_reward = 0
         self.total_reward = 0
         self.runs = 0
         self.random_chance = 0.05
         self.random_chance_decay = 0.99
         self.total_steps = 0
+
 
     def reset(self, destination=None):
         self.planner.route_to(destination)
@@ -124,19 +131,8 @@ class LearningAgent(Agent):
         # We find the best action to take if we've tried each action at least once in this state
         # If we run into a situation where we haven't tried everything we return one of the untried ones instead
         state_id = self.state.get_state_id();
-        if state_id in self.q_hat:
-            known_q_value = self.q_hat[state_id]
-        else:
-            known_q_value = {}
-        
-        if 'left' not in known_q_value:
-            return 'left'
-        if 'right' not in known_q_value:
-            return 'right'
-        if 'forward' not in known_q_value:
-            return 'forward'
-        if None not in known_q_value:
-            return None
+
+        known_q_value = self.q_hat[state_id]
         
         max = 0
         max_action = None
@@ -195,46 +191,60 @@ class LearningAgent(Agent):
     def get_score(self):
         return self.total_reward / float(self.total_steps)
         
+    def get_state(self):
+        return str(self.state)
+        
 def run_grid_search():
     """Run a gridsearch to determine optimal parameters for the agent"""
 
     best_score = 0
     best_learning_rate = 0
     best_discount_rate = 0
+    best_initial_q_hat = 0
+    trial_results = []
     
     # TODO These ought to be done with numpy.arange but I don't have that package installed at the moment
     for learning_rate_raw in range(1, 50, 1):
         for discount_rate_raw in range(1, 20, 1):
-            learning_rate = learning_rate_raw * 0.01
-            discount_rate = discount_rate_raw * 0.05
-            # Set up environment and agent
-            e = Environment()  # create environment (also adds some dummy traffic)
-            a = e.create_agent(LearningAgent, learning_rate, discount_rate)  # create agent
-            e.set_primary_agent(a, enforce_deadline=True)  # specify agent to track
-            # NOTE: You can set enforce_deadline=False while debugging to allow longer trials
+            for initial_q_hat in range(0, 10, 1):
+                learning_rate = learning_rate_raw * 0.01
+                discount_rate = discount_rate_raw * 0.05
+                # Set up environment and agent
+                e = Environment()  # create environment (also adds some dummy traffic)
+                a = e.create_agent(LearningAgent, learning_rate, discount_rate, initial_q_hat)  # create agent
+                e.set_primary_agent(a, enforce_deadline=True)  # specify agent to track
+                # NOTE: You can set enforce_deadline=False while debugging to allow longer trials
 
-            # Now simulate it
-            sim = Simulator(e, update_delay=0, display=False)  # create simulator (uses pygame when display=True, if available)
-            # NOTE: To speed up simulation, reduce update_delay and/or set display=False
+                # Now simulate it
+                sim = Simulator(e, update_delay=0, display=False)  # create simulator (uses pygame when display=True, if available)
+                # NOTE: To speed up simulation, reduce update_delay and/or set display=False
 
-            sim.run(n_trials=30)  # run for a specified number of trials
-            # NOTE: To quit midway, press Esc or close pygame window, or hit Ctrl+C on the command-line
-            score = a.get_score()
-            if score > best_score:
-                best_score = score
-                best_learning_rate = learning_rate
-                best_discount_rate = discount_rate
-                
-    print "Gridsearch finished, best learning rate: %.2f, best discount rate: %.2f" % (best_learning_rate, best_discount_rate)
+                sim.run(n_trials=30)  # run for a specified number of trials
+                # NOTE: To quit midway, press Esc or close pygame window, or hit Ctrl+C on the command-line
+                score = a.get_score()
+                if score > best_score:
+                    best_score = score
+                    best_learning_rate = learning_rate
+                    best_discount_rate = discount_rate
+                    best_initial_q_hat = initial_q_hat
+                trial_results.append((learning_rate, discount_rate, initial_q_hat, score))
+    print "Gridsearch finished, best learning rate: %.2f, best discount rate: %.2f, best initial q hat %i" % (best_learning_rate, best_discount_rate, best_initial_q_hat)
+
+    with open('gridsearch_results.csv', 'wb') as csvfile:
+        spamwriter = csv.writer(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
+        spamwriter.writerow(('learning rate', 'discount factor', 'initial q-hat value', 'score'))
+        for result in trial_results:
+            spamwriter.writerow(result)
     
 def run():
     """Run the agent for a finite number of trials."""  
     learning_rate = 0.42
     discount_rate = 0.15
+    initial_q_hat = 4
     
     # Set up environment and agent
     e = Environment()  # create environment (also adds some dummy traffic)
-    a = e.create_agent(LearningAgent, learning_rate, discount_rate)  # create agent
+    a = e.create_agent(LearningAgent, learning_rate, discount_rate, initial_q_hat)  # create agent
     e.set_primary_agent(a, enforce_deadline=True)  # specify agent to track
     # NOTE: You can set enforce_deadline=False while debugging to allow longer trials
 
