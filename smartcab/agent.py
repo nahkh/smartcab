@@ -97,6 +97,8 @@ class LearningAgent(Agent):
         self.random_chance = 0.05
         self.random_chance_decay = 0.99
         self.total_steps = 0
+        self.initial_q_hat = initial_q_hat
+        self.failed_trials = []
 
 
     def reset(self, destination=None):
@@ -177,11 +179,15 @@ class LearningAgent(Agent):
         # Evaluate new state
         # TODO refactor the update method so we could reuse this newly calculated state in the next iteration
         new_next_waypoint = self.planner.next_waypoint()  # from route planner, also displayed by simulator
-        inputs = self.env.sense(self)
-        new_state = State()
-        new_state.update_from_input(new_next_waypoint, inputs)
-        
-        new_state_utility = self.calculate_utility(new_state)
+        if new_next_waypoint == None:
+        	new_state_utility = 2
+        else:
+        	inputs = self.env.sense(self)
+        	new_state = State()
+        	new_state.update_from_input(new_next_waypoint, inputs)
+        	new_state_utility = self.calculate_utility(new_state)
+        	if deadline == 0:
+        		self.failed_trials.append(self.runs - 1)
         # Learn 
         self.update_q_hat(action, reward, new_state_utility)
 
@@ -190,6 +196,16 @@ class LearningAgent(Agent):
         
     def get_score(self):
         return self.total_reward / float(self.total_steps)
+    
+    def get_proportion_of_states_visited(self):
+        sum = 0
+        for i in range(384):
+            for k, v in self.q_hat[i].items():
+                if v != self.initial_q_hat:
+                    sum += 1
+        return sum / float(384)
+    def get_failed_trials(self):
+    	return self.failed_trials  
         
     def get_state(self):
         return str(self.state)
@@ -202,10 +218,10 @@ def run_grid_search():
     best_discount_rate = 0
     best_initial_q_hat = 0
     trial_results = []
-    
+    number_of_trials = 30
     # TODO These ought to be done with numpy.arange but I don't have that package installed at the moment
-    for learning_rate_raw in range(1, 50, 1):
-        for discount_rate_raw in range(1, 20, 1):
+    for learning_rate_raw in range(5, 50, 5):
+        for discount_rate_raw in range(5, 20, 5):
             for initial_q_hat in range(0, 10, 1):
                 learning_rate = learning_rate_raw * 0.01
                 discount_rate = discount_rate_raw * 0.05
@@ -219,7 +235,7 @@ def run_grid_search():
                 sim = Simulator(e, update_delay=0, display=False)  # create simulator (uses pygame when display=True, if available)
                 # NOTE: To speed up simulation, reduce update_delay and/or set display=False
 
-                sim.run(n_trials=30)  # run for a specified number of trials
+                sim.run(n_trials=number_of_trials)  # run for a specified number of trials
                 # NOTE: To quit midway, press Esc or close pygame window, or hit Ctrl+C on the command-line
                 score = a.get_score()
                 if score > best_score:
@@ -227,12 +243,12 @@ def run_grid_search():
                     best_learning_rate = learning_rate
                     best_discount_rate = discount_rate
                     best_initial_q_hat = initial_q_hat
-                trial_results.append((learning_rate, discount_rate, initial_q_hat, score))
+                trial_results.append((learning_rate, discount_rate, initial_q_hat, score, a.get_proportion_of_states_visited(), len(a.get_failed_trials())/ float(number_of_trials)))
     print "Gridsearch finished, best learning rate: %.2f, best discount rate: %.2f, best initial q hat %i" % (best_learning_rate, best_discount_rate, best_initial_q_hat)
 
     with open('gridsearch_results.csv', 'wb') as csvfile:
-        spamwriter = csv.writer(csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
-        spamwriter.writerow(('learning rate', 'discount factor', 'initial q-hat value', 'score'))
+        spamwriter = csv.writer(csvfile, delimiter=';', quotechar='|', quoting=csv.QUOTE_MINIMAL)
+        spamwriter.writerow(('learning rate', 'discount factor', 'initial q-hat value', 'score', 'states visited', 'failed trials'))
         for result in trial_results:
             spamwriter.writerow(result)
     
@@ -249,10 +265,12 @@ def run():
     # NOTE: You can set enforce_deadline=False while debugging to allow longer trials
 
     # Now simulate it
-    sim = Simulator(e, update_delay=2, display=True)  # create simulator (uses pygame when display=True, if available)
+    sim = Simulator(e, update_delay=0, display=False)  # create simulator (uses pygame when display=True, if available)
     # NOTE: To speed up simulation, reduce update_delay and/or set display=False
 
     sim.run(n_trials=100)  # run for a specified number of trials
+    print "Failed trials: "
+    print a.get_failed_trials()
     # NOTE: To quit midway, press Esc or close pygame window, or hit Ctrl+C on the command-line
 
 
